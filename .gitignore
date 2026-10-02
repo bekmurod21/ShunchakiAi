@@ -1,0 +1,10 @@
+bin/
+obj/
+artifacts/
+publish/
+*.user
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
