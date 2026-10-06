@@ -10,6 +10,12 @@ public sealed record AgentOptions
 {
     public const string DefaultModel = "claude-opus-5-5";
 
+    /// <summary>
+    /// Subscription backends come first in the default chain, so work is paid from Claude Pro/Max
+    /// and Google-account limits before any API key is charged. Skipped when not installed.
+    /// </summary>
+    public static readonly string[] DefaultSubscriptionChain = ["claude-code", "gemini-cli"];
+
     /// <summary>Claude part of the default failover chain.</summary>
     public static readonly string[] DefaultClaudeChain = [DefaultModel, "claude-sonnet-5-5", "claude-haiku-4-5"];
 
@@ -32,6 +38,9 @@ public sealed record AgentOptions
     public required int MaxToolIterations { get; init; }
     public required int MaxAutoContinue { get; init; }
     public required TimeSpan MaxWait { get; init; }
+
+    /// <summary>Upper bound for one Claude Code / Gemini CLI turn (they run whole tasks).</summary>
+    public required TimeSpan CliTimeout { get; init; }
     public required bool Resume { get; init; }
     public string? SessionId { get; init; }
     public required TimeSpan ShellTimeout { get; init; }
@@ -69,6 +78,7 @@ public sealed record AgentOptions
             MaxToolIterations = IntEnv("SHUNCHAKI_MAX_TOOL_ITERATIONS", 100),
             MaxAutoContinue = IntEnv("SHUNCHAKI_MAX_CONTINUE", 5),
             MaxWait = TimeSpan.FromSeconds(IntEnv("SHUNCHAKI_MAX_WAIT", 600)),
+            CliTimeout = TimeSpan.FromSeconds(IntEnv("SHUNCHAKI_CLI_TIMEOUT", 1800)),
             Resume = cli.Resume,
             SessionId = cli.SessionId,
             ShellTimeout = TimeSpan.FromSeconds(IntEnv("SHUNCHAKI_SHELL_TIMEOUT", 120)),
@@ -87,7 +97,7 @@ public sealed record AgentOptions
     {
         var geminiChain = Env("SHUNCHAKI_GEMINI_MODELS")?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? DefaultGeminiChain;
-        string[] defaults = [.. DefaultClaudeChain, .. geminiChain];
+        string[] defaults = [.. DefaultSubscriptionChain, .. DefaultClaudeChain, .. geminiChain];
 
         if (value is null)
         {

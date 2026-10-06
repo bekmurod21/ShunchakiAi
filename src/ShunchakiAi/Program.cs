@@ -56,20 +56,21 @@ using var providers = new ProviderRegistry();
 AgentSession? session = null;
 var login = new LoginFlow(credentials, providers, () => session?.Router, options, ui);
 login.ApplyStoredCredentials();
+login.RegisterInstalledClis();
 
 if (providers.IsEmpty)
 {
     if (!ui.IsInteractive)
     {
-        ui.ShowError("No API key found. Set ANTHROPIC_API_KEY (Claude) or GEMINI_API_KEY (Gemini), " +
-                     "or run shunchaki interactively once to enter and save a key.");
+        ui.ShowError("No backend found. Install and log in to Claude Code (`claude`) or Gemini CLI (`gemini`), " +
+                     "set ANTHROPIC_API_KEY / GEMINI_API_KEY, or run shunchaki interactively once to enter a key.");
         return 2;
     }
 
-    ui.ShowInfo("Welcome to Shunchaki AI! No API key is configured yet - let's add one.");
+    ui.ShowInfo("Welcome to Shunchaki AI! Nothing is configured yet - choose how to connect.");
     if (!await login.LoginAsync(null))
     {
-        ui.ShowError("Shunchaki needs a Claude or Gemini key to work. Run it again when you have one.");
+        ui.ShowError("Shunchaki needs Claude Code, Gemini CLI or an API key to work. Run it again when you have one.");
         return 2;
     }
 }

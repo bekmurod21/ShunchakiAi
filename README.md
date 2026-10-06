@@ -30,6 +30,7 @@ Allow? [y/n] (y): y
   - Animated spinners while it waits on the API.
   - Markdown rendering: headings, lists, quotes, inline code and bordered code blocks.
   - Dimmed thinking summaries.
+- **Claude Pro/Max and Gemini subscriptions.** Shunchaki can run the official Claude Code and Gemini CLI with your own login, so usage comes from your subscription limits rather than API billing. See [Subscriptions](#subscriptions-claude-promax-and-gemini).
 - **Claude and Gemini in one chain.** Anthropic and Google models can be mixed in the failover chain, and work moves between them with the same context.
 - **Model failover.** If a model hits its rate limit or token quota, is overloaded or unavailable, can't fit the conversation, or declines a request, the work moves to the next model in the chain and keeps going until the task is finished. See [Model failover and session history](#model-failover-and-session-history).
 - **Saved sessions and work log.** The full history and a readable work log are saved after every step, and `shunchaki --resume` continues where you left off.
@@ -37,7 +38,10 @@ Allow? [y/n] (y): y
 
 ## Requirements
 
-- A Claude (Anthropic) key, a Gemini (Google) key, or both. You can enter them after starting `shunchaki`, or set them as environment variables. See [API keys](#api-keys).
+- At least one backend:
+  - [Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code) logged in with Claude Pro/Max
+  - [Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) logged in with your Google account
+  - a Claude or Gemini API key, which you can enter after starting `shunchaki` (see [API keys](#api-keys))
 - To build: the .NET 10 SDK. Native AOT also needs the platform linker: `clang` on Linux, the Xcode command-line tools on macOS, or "Desktop development with C++" on Windows.
 
 ## Build
@@ -85,6 +89,7 @@ The REPL accepts:
 - `/models`: the failover chain and each model's state
 - `/sessions`: saved sessions in this workspace
 - `/resume [id]`: continue a saved session
+- `/login [claude-code|gemini-cli]`: log in with your subscription inside the official CLI
 - `/login [claude|gemini]`: enter an API key, which is checked before use and can be saved
 - `/logout [claude|gemini]`: remove a key
 - `/keys`: show which keys are set, masked, and where each comes from
@@ -102,11 +107,54 @@ pressing it at the prompt quits.
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/` | Endpoint override |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/` | Endpoint override |
 | `SHUNCHAKI_MAX_WAIT` | `600` | Seconds to keep retrying when every model is unavailable |
+| `SHUNCHAKI_CLI_TIMEOUT` | `1800` | Max seconds for one Claude Code or Gemini CLI turn |
+| `SHUNCHAKI_CLAUDE_CODE_PATH`, `SHUNCHAKI_GEMINI_CLI_PATH` | found on `PATH` | CLI executables |
+| `SHUNCHAKI_CLAUDE_CODE_ARGS`, `SHUNCHAKI_GEMINI_CLI_ARGS` | none | Extra CLI flags |
 | `SHUNCHAKI_MAX_TOKENS` | `16000` | Max output tokens per response |
 | `SHUNCHAKI_MAX_CONTINUE` | `5` | Automatic "continue" requests when a reply hits the output limit |
 | `SHUNCHAKI_MAX_TOOL_ITERATIONS` | `100` | Tool round-trips allowed per turn |
 | `SHUNCHAKI_SHELL_TIMEOUT` | `120` | Default shell timeout in seconds |
 | `SHUNCHAKI_FALLBACK` | on | Set to `off` to disable server-side refusal fallback |
+
+## Subscriptions (Claude Pro/Max and Gemini)
+
+Shunchaki doesn't use subscription credentials itself; Anthropic and Google don't allow third-party apps to call their APIs with them. Instead it runs the **official CLIs as subprocesses**, logged in with your account, so each turn counts against your subscription limits.
+
+| Backend id | Runs | Login |
+| --- | --- | --- |
+| `claude-code` or `claude-code:opus` | `claude -p --output-format stream-json` | Claude Pro/Max inside Claude Code |
+| `gemini-cli` or `gemini-cli:gemini-2.5-pro` | `gemini -p --output-format json` | Google account inside Gemini CLI |
+
+```bash
+npm install -g @anthropic-ai/claude-code @google/gemini-cli
+shunchaki                 # then: /login claude-code   and/or   /login gemini-cli
+```
+
+**Logging in.** `/login claude-code` or `/login gemini-cli` hands the terminal to the CLI so you can log in there. Shunchaki never sees the credentials.
+
+**Billing.**
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY` and `GOOGLE_API_KEY` are removed from the CLI's environment, so it can't silently bill an API key instead of your subscription.
+- The default chain is `claude-code, gemini-cli`, then the API models. Subscriptions are used first and API keys only as a fallback; a CLI that isn't installed is skipped.
+
+**How a turn works.** A CLI backend is a complete agent: one turn is a whole task. It reads and edits files and runs commands itself, and Shunchaki shows each action live (`⏺ Bash: dotnet test`) and records it in the work log. Its final answer, ending with a summary, becomes a normal turn in the shared history.
+
+**Limits.**
+- "Usage limit reached" (Claude Code reports when it resets) or a Gemini quota error is treated like an API rate limit. The backend cools down until the reset, or for 15 minutes, and the work moves to the next model with a handoff note.
+- A login error excludes that backend.
+
+**Context.**
+- If Claude Code answered the previous turn, it resumes its own session (`--resume`) and keeps its full internal context.
+- Otherwise a CLI gets the shared transcript (requests, answers, tool calls and results from any model, capped at 80k characters) plus the handoff note.
+- Gemini CLI can't resume a session by id in headless mode, so it always gets the transcript.
+
+**Permissions.** A headless CLI can't show Shunchaki's approval prompt, so permissions map as follows:
+
+| Shunchaki | Claude Code | Gemini CLI |
+| --- | --- | --- |
+| Default | `--permission-mode acceptEdits` (file edits allowed; other actions are denied and reported) | `--approval-mode auto_edit` |
+| `--yes` | `--dangerously-skip-permissions` | `--approval-mode yolo` |
+
+Add flags with `SHUNCHAKI_CLAUDE_CODE_ARGS` or `SHUNCHAKI_GEMINI_CLI_ARGS`, for example `--allowedTools "Bash(dotnet test:*)"`.
 
 ## API keys
 
@@ -172,11 +220,11 @@ src/ShunchakiAi/
 ├── TurnCancellation.cs     Ctrl+C cancels the current turn, not the process
 ├── StandardInput.cs        Piped-stdin reader that never hangs on an idle pipe
 ├── Configuration/          CLI parsing, environment configuration, model capabilities
-├── Api/                    IModelProvider, AnthropicClient, GeminiClient (history translation), HttpSender (retries)
+├── Api/                    IModelProvider, AnthropicClient, GeminiClient, CliBackends (Claude Code, Gemini CLI), HttpSender
 ├── Agent/                  Agent loop, conversation, ModelRouter (failover chain), FailoverPolicy
 ├── Sessions/               SessionStore (session.json + worklog.md), WorkLog
 ├── Tools/                  ITool, file/shell/record_progress tools, ToolRegistry
-├── Execution/              FileSystemService (sandboxed IO), ShellExecutor, BoundedTextBuffer
+├── Execution/              FileSystemService (sandboxed IO), ShellExecutor, CliProcess, BoundedTextBuffer
 └── Ui/                     Spectre.Console renderer and Markdown renderer
 ```
 

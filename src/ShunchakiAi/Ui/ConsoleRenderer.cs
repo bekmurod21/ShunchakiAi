@@ -34,7 +34,10 @@ public sealed class ConsoleRenderer : IAgentView
         var grid = new Grid().AddColumn(new GridColumn().NoWrap()).AddColumn();
         grid.AddRow("[grey]models[/]", Markup.Escape($"{string.Join(" → ", options.Models)} (effort: {options.Effort})"));
         grid.AddRow("[grey]workspace[/]", Markup.Escape(options.WorkingDirectory));
-        grid.AddRow("[grey]keys[/]", string.Join("   ", new[] { ModelProviders.Anthropic, ModelProviders.Gemini }.Select(p =>
+        grid.AddRow("[grey]backends[/]", string.Join("\n", new[]
+            {
+                ModelProviders.ClaudeCode, ModelProviders.GeminiCli, ModelProviders.Anthropic, ModelProviders.Gemini,
+            }.Select(p =>
             hasKey(p) ? $"[green]✔[/] {Markup.Escape(ModelProviders.DisplayName(p))}"
                       : $"[grey]✘ {Markup.Escape(ModelProviders.DisplayName(p))} (/login)[/]")));
         grid.AddRow("[grey]session[/]", Markup.Escape(sessionPath));
@@ -55,8 +58,11 @@ public sealed class ConsoleRenderer : IAgentView
               cat log.txt | shunchaki "explain"   Piped stdin is appended to the prompt
 
             [bold]Options[/]
-              -m, --model <id[[,id...]]>    Model failover chain; Claude and Gemini can be mixed
-                                          (default: Claude chain, then Gemini chain; env SHUNCHAKI_MODELS)
+              -m, --model <id[[,id...]]>    Model failover chain; any mix of:
+                                            claude-code[[:model]]  Claude Code with your Pro/Max subscription
+                                            gemini-cli[[:model]]   Gemini CLI with your Google account
+                                            claude-*, gemini-*   API models (API key)
+                                          (default: claude-code, gemini-cli, then API models)
                   --no-failover           Use only the first model
               -r, --resume                Continue the most recent session in this workspace
               -s, --session <id>          Continue a specific saved session
@@ -78,12 +84,15 @@ public sealed class ConsoleRenderer : IAgentView
               SHUNCHAKI_MAX_TOKENS        Max output tokens per response (default 16000)
               SHUNCHAKI_MAX_CONTINUE      Automatic continuations after the output limit (default 5)
               SHUNCHAKI_MAX_WAIT          Max seconds to wait when every model is busy (default 600)
+              SHUNCHAKI_CLI_TIMEOUT       Max seconds for one Claude Code / Gemini CLI turn (default 1800)
+              SHUNCHAKI_CLAUDE_CODE_PATH  Path to the claude executable (default: found on PATH)
+              SHUNCHAKI_GEMINI_CLI_PATH   Path to the gemini executable (default: found on PATH)
               SHUNCHAKI_SHELL_TIMEOUT     Default shell command timeout in seconds (default 120)
               SHUNCHAKI_FALLBACK=off      Disable server-side refusal fallback
 
             [bold]REPL commands[/]
               /help  /clear  /usage  /models  /sessions  /resume [[id]]
-              /login [[claude|gemini]]  /logout [[claude|gemini]]  /keys  /exit
+              /login [[claude-code|gemini-cli|claude|gemini]]  /logout [[claude|gemini]]  /keys  /exit
 
             Sessions (history + work log) are saved in .shunchaki/sessions/ inside the workspace.
             """);
@@ -95,8 +104,9 @@ public sealed class ConsoleRenderer : IAgentView
         [bold]/models[/]        failover chain and each model's state
         [bold]/sessions[/]      saved sessions in this workspace
         [bold]/resume [[id]][/]   continue a saved session (latest if no id)
+        [bold]/login [[claude-code|gemini-cli]][/]  log in with your Claude Pro/Max or Google account
         [bold]/login [[claude|gemini]][/]   enter an API key (verified, optionally saved)
-        [bold]/logout [[claude|gemini]][/]  remove a key
+        [bold]/logout [[claude|gemini]][/]  remove an API key
         [bold]/keys[/]          show which keys are configured
         [bold]/exit[/]   quit (also /quit, Ctrl+D)
         End a line with [bold]\[/] to continue typing on the next line.
@@ -191,6 +201,11 @@ public sealed class ConsoleRenderer : IAgentView
         var approved = _console.Prompt(new ConfirmationPrompt("[yellow]Allow?[/]") { DefaultValue = true });
         return Task.FromResult(approved);
     }
+
+    public void ShowActivity(string model, string action) =>
+        _console.MarkupLine(action.StartsWith('⚠')
+            ? $"[yellow]  {Markup.Escape(action)}[/]"
+            : $"[deepskyblue1]  ⏺[/] [grey]{Markup.Escape(Truncate(action, 160))}[/]");
 
     public void ShowModelSwitch(string from, string to, string reason)
     {

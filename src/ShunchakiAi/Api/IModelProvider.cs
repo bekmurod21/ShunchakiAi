@@ -31,10 +31,36 @@ public static class ModelProviders
     public const string Anthropic = "Anthropic";
     public const string Gemini = "Gemini";
 
-    public static string ProviderOf(string model) =>
-        model.StartsWith("gemini", StringComparison.OrdinalIgnoreCase) ? Gemini : Anthropic;
+    /// <summary>Claude Code CLI, logged in with a Claude Pro/Max subscription (model id <c>claude-code[:model]</c>).</summary>
+    public const string ClaudeCode = "ClaudeCode";
 
-    public static string DisplayName(string provider) => provider == Gemini ? "Gemini (Google)" : "Claude (Anthropic)";
+    /// <summary>Gemini CLI, logged in with a Google account (model id <c>gemini-cli[:model]</c>).</summary>
+    public const string GeminiCli = "GeminiCli";
+
+    public static string ProviderOf(string model)
+    {
+        if (model.StartsWith("claude-code", StringComparison.OrdinalIgnoreCase))
+        {
+            return ClaudeCode;
+        }
+
+        if (model.StartsWith("gemini-cli", StringComparison.OrdinalIgnoreCase))
+        {
+            return GeminiCli;
+        }
+
+        return model.StartsWith("gemini", StringComparison.OrdinalIgnoreCase) ? Gemini : Anthropic;
+    }
+
+    public static bool IsSubscription(string provider) => provider is ClaudeCode or GeminiCli;
+
+    public static string DisplayName(string provider) => provider switch
+    {
+        Gemini => "Gemini (Google API key)",
+        ClaudeCode => "Claude Code (Pro/Max subscription)",
+        GeminiCli => "Gemini CLI (Google account)",
+        _ => "Claude (Anthropic API key)",
+    };
 }
 
 /// <summary>

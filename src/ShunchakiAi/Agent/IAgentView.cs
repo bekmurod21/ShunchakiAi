@@ -18,6 +18,9 @@ public interface IAgentView : IToolApprover
 
     void ShowWarning(string message);
 
+    /// <summary>One action performed inside a CLI backend's turn (e.g. "Bash: dotnet test").</summary>
+    void ShowActivity(string model, string action);
+
     void ShowInfo(string message);
 
     void ShowModelSwitch(string from, string to, string reason);

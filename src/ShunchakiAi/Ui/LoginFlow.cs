@@ -1,6 +1,8 @@
 using ShunchakiAi.Agent;
 using ShunchakiAi.Api;
+using System.Diagnostics;
 using ShunchakiAi.Configuration;
+using ShunchakiAi.Execution;
 
 namespace ShunchakiAi.Ui;
 
@@ -25,20 +27,47 @@ public sealed class LoginFlow(
         }
     }
 
-    /// <summary>Asks for a key (choosing the provider first when <paramref name="provider"/> is null).</summary>
+    private static readonly string[] AllBackends =
+        [ModelProviders.ClaudeCode, ModelProviders.GeminiCli, ModelProviders.Anthropic, ModelProviders.Gemini];
+
+    /// <summary>
+    /// Registers Claude Code and Gemini CLI when their executables are installed. Whether they are
+    /// logged in is discovered on first use; a login error moves the work to the next model.
+    /// </summary>
+    public void RegisterInstalledClis()
+    {
+        foreach (var backend in new[] { ModelProviders.ClaudeCode, ModelProviders.GeminiCli })
+        {
+            if (Locate(backend) is { } path && !providers.Has(backend))
+            {
+                providers.Set(CreateCli(backend, path));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Log in to a backend (choosing it first when <paramref name="provider"/> is null): an API key
+    /// for Anthropic/Gemini, or the official CLI's own login for the subscription backends.
+    /// </summary>
     public async Task<bool> LoginAsync(string? provider, CancellationToken cancellationToken = default)
     {
         if (!ui.IsInteractive)
         {
-            ui.ShowError("Cannot ask for a key: the terminal is not interactive. Set ANTHROPIC_API_KEY or GEMINI_API_KEY instead.");
+            ui.ShowError("Cannot log in: the terminal is not interactive. Set ANTHROPIC_API_KEY or GEMINI_API_KEY, " +
+                         "or log in to `claude` / `gemini` yourself first.");
             return false;
         }
 
-        provider ??= ui.Choose("Which provider's key do you want to enter?",
-            CredentialStore.Providers.Select(p => (p, ModelProviders.DisplayName(p))).ToList());
+        provider ??= ui.Choose("How do you want to use Claude or Gemini?",
+            AllBackends.Select(p => (p, ModelProviders.DisplayName(p))).ToList());
         if (provider is null)
         {
             return false;
+        }
+
+        if (ModelProviders.IsSubscription(provider))
+        {
+            return await SubscriptionLoginAsync(provider);
         }
 
         ui.ShowInfo(provider == ModelProviders.Gemini
@@ -84,8 +113,67 @@ public sealed class LoginFlow(
         return false;
     }
 
+    /// <summary>
+    /// Hands the terminal to the official CLI so the user logs in there (Claude Pro/Max via
+    /// Claude Code's /login, Google account via Gemini CLI). Shunchaki never sees the credentials.
+    /// </summary>
+    private async Task<bool> SubscriptionLoginAsync(string backend)
+    {
+        var (command, package, steps) = backend == ModelProviders.ClaudeCode
+            ? ("claude", "@anthropic-ai/claude-code", "type /login, choose your Claude Pro/Max account, then /exit")
+            : ("gemini", "@google/gemini-cli", "choose \"Login with Google\", finish in the browser, then /quit");
+
+        if (Locate(backend) is not { } path)
+        {
+            ui.ShowError($"`{command}` is not installed. Install it with:  npm install -g {package}");
+            return false;
+        }
+
+        ui.ShowInfo($"Starting `{command}`: {steps}. You will return to Shunchaki afterwards.");
+        try
+        {
+            var info = new ProcessStartInfo(path) { UseShellExecute = false, WorkingDirectory = options.WorkingDirectory };
+            foreach (var name in new[] { "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY" })
+            {
+                // Make the CLI use (and offer) its subscription login, not an API key.
+                info.Environment.Remove(name);
+            }
+
+            using var process = Process.Start(info);
+            if (process is not null)
+            {
+                await process.WaitForExitAsync();
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            ui.ShowError($"Could not start `{command}`: {ex.Message}");
+            return false;
+        }
+
+        providers.Set(CreateCli(backend, path));
+        router()?.ProviderKeyChanged(backend);
+        ui.ShowSuccess($"{ModelProviders.DisplayName(backend)} is ready. Its usage comes from your subscription limits.");
+        return true;
+    }
+
+    private static string? Locate(string backend) => backend == ModelProviders.ClaudeCode
+        ? CliProcess.Locate("claude", Environment.GetEnvironmentVariable("SHUNCHAKI_CLAUDE_CODE_PATH"))
+        : CliProcess.Locate("gemini", Environment.GetEnvironmentVariable("SHUNCHAKI_GEMINI_CLI_PATH"));
+
+    private IModelProvider CreateCli(string backend, string path) => backend == ModelProviders.ClaudeCode
+        ? new ClaudeCodeProvider(path, options)
+        : new GeminiCliProvider(path, options);
+
     public void Logout(string? provider)
     {
+        if (provider is not null && ModelProviders.IsSubscription(provider))
+        {
+            ui.ShowInfo($"Log out inside the CLI itself (`{(provider == ModelProviders.ClaudeCode ? "claude" : "gemini")}`), " +
+                        "or remove it from the chain with -m.");
+            return;
+        }
+
         var targets = provider is null ? CredentialStore.Providers : [provider];
         foreach (var target in targets)
         {
@@ -106,6 +194,14 @@ public sealed class LoginFlow(
 
     public void ShowKeys()
     {
+        foreach (var backend in new[] { ModelProviders.ClaudeCode, ModelProviders.GeminiCli })
+        {
+            var state = providers.Has(backend)
+                ? $"installed: {Locate(backend)} (login is managed by the CLI; /login {(backend == ModelProviders.ClaudeCode ? "claude-code" : "gemini-cli")})"
+                : "not installed";
+            ui.ShowInfo($"{ModelProviders.DisplayName(backend),-36} {state}");
+        }
+
         foreach (var provider in CredentialStore.Providers)
         {
             var credential = credentials.Get(provider);
@@ -118,7 +214,7 @@ public sealed class LoginFlow(
                     CredentialSource.SavedFile => "saved",
                     _ => "this session only",
                 }}]";
-            ui.ShowInfo($"{ModelProviders.DisplayName(provider),-20} {state}");
+            ui.ShowInfo($"{ModelProviders.DisplayName(provider),-36} {state}");
         }
 
         ui.ShowInfo($"Saved keys file: {credentials.FilePath}");
@@ -130,6 +226,8 @@ public sealed class LoginFlow(
         null or "" => null,
         "claude" or "anthropic" => ModelProviders.Anthropic,
         "gemini" or "google" => ModelProviders.Gemini,
-        _ => throw new ArgumentException($"Unknown provider '{text}'. Use 'claude' or 'gemini'."),
+        "claude-code" or "claudecode" => ModelProviders.ClaudeCode,
+        "gemini-cli" or "geminicli" => ModelProviders.GeminiCli,
+        _ => throw new ArgumentException($"Unknown provider '{text}'. Use claude-code, gemini-cli, claude or gemini."),
     };
 }

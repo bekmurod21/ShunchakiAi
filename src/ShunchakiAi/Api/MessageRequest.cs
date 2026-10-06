@@ -23,6 +23,12 @@ public sealed record MessageRequest(
     /// </summary>
     public const string PrivateFieldPrefix = "_";
 
+    /// <summary>
+    /// Live progress from providers that run a whole agent turn themselves (CLI backends):
+    /// each call describes one action, e.g. "Bash: dotnet test". Not part of the request body.
+    /// </summary>
+    public Action<string>? Activity { get; init; }
+
     public byte[] ToAnthropicJson()
     {
         using var buffer = new MemoryStream();

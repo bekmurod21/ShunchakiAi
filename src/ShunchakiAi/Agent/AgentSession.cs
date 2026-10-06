@@ -18,6 +18,8 @@ namespace ShunchakiAi.Agent;
 /// </summary>
 public sealed class AgentSession
 {
+    private const string ResumedReason = "session resumed";
+
     private const string ContinuePrompt =
         "Your previous response was cut off by the output token limit. Continue exactly where you stopped; " +
         "do not repeat what you already wrote.";
@@ -104,7 +106,7 @@ public sealed class AgentSession
 
         // A session saved mid-turn may end on an assistant tool call that never ran.
         _conversation.CloseDanglingToolCalls("Not run: the session was closed before this tool call executed.");
-        _switchReason = "session resumed";
+        _switchReason = ResumedReason;
     }
 
     public int MessageCount => _conversation.Count;
@@ -307,7 +309,7 @@ public sealed class AgentSession
 
     /// <summary>Every failure since the last answer explains why the work moved on.</summary>
     private void AddSwitchReason(string reason) =>
-        _switchReason = _switchReason is null ? reason : $"{_switchReason}; {reason}";
+        _switchReason = _switchReason is null or ResumedReason ? reason : $"{_switchReason}; {reason}";
 
     private void OnModelFailed(string model, Failure failure)
     {
@@ -363,7 +365,7 @@ public sealed class AgentSession
         _handoffFor = model;
     }
 
-    private MessageRequest BuildRequest(string model) => new(
+    private MessageRequest BuildRequest(string model) => new MessageRequest(
         model,
         _options.MaxTokens,
         _systemPrompt,
@@ -371,7 +373,16 @@ public sealed class AgentSession
         _conversation.Messages,
         _options.Effort,
         ModelCapabilities.SupportsAdaptiveThinking(model),
-        _options.UseServerFallback && ModelCapabilities.SupportsServerFallback(model));
+        _options.UseServerFallback && ModelCapabilities.SupportsServerFallback(model))
+    {
+        // CLI backends report each action they take; show it live and keep it in the work log
+        // so the next model knows what was done.
+        Activity = action =>
+        {
+            _view.ShowActivity(model, action);
+            _workLog.Add(WorkLogKind.Tool, model, action, isError: action.StartsWith('⚠'));
+        },
+    };
 
     private async Task RunToolsAsync(List<ToolCall> calls, string model, CancellationToken cancellationToken)
     {
