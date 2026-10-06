@@ -47,13 +47,13 @@ public sealed class ConsoleRenderer : IAgentView
             [bold deepskyblue1]Shunchaki AI[/] - an AI coding agent for your terminal
 
             [bold]Usage[/]
-              ai                          Start an interactive session (REPL)
-              ai [[options]] "<prompt>"     Run a single request and exit
-              cat log.txt | ai "explain"   Piped stdin is appended to the prompt
+              shunchaki                          Start an interactive session (REPL)
+              shunchaki [[options]] "<prompt>"     Run a single request and exit
+              cat log.txt | shunchaki "explain"   Piped stdin is appended to the prompt
 
             [bold]Options[/]
-              -m, --model <id[,id...]>    Model failover chain (default: claude-opus-5-5,
-                                          claude-sonnet-5-5,claude-haiku-4-5; env SHUNCHAKI_MODELS)
+              -m, --model <id[[,id...]]>    Model failover chain; Claude and Gemini can be mixed
+                                          (default: Claude chain, then Gemini chain; env SHUNCHAKI_MODELS)
                   --no-failover           Use only the first model
               -r, --resume                Continue the most recent session in this workspace
               -s, --session <id>          Continue a specific saved session
@@ -64,10 +64,16 @@ public sealed class ConsoleRenderer : IAgentView
               -h, --help                  Show this help
 
             [bold]Environment[/]
-              ANTHROPIC_API_KEY           Required. Your Anthropic API key
-              ANTHROPIC_BASE_URL          Optional API endpoint override
+              ANTHROPIC_API_KEY           Anthropic key (Claude models)
+              GEMINI_API_KEY              Google key (Gemini models; GOOGLE_API_KEY also works)
+                                          At least one key is required.
+              SHUNCHAKI_GEMINI_MODELS     Gemini part of the default chain
+                                          (default: gemini-3.1-pro-preview,gemini-3.8-flash)
+              ANTHROPIC_BASE_URL          Optional endpoint overrides
+              GEMINI_BASE_URL
               SHUNCHAKI_MAX_TOKENS        Max output tokens per response (default 16000)
               SHUNCHAKI_MAX_CONTINUE      Automatic continuations after the output limit (default 5)
+              SHUNCHAKI_MAX_WAIT          Max seconds to wait when every model is busy (default 600)
               SHUNCHAKI_SHELL_TIMEOUT     Default shell command timeout in seconds (default 120)
               SHUNCHAKI_FALLBACK=off      Disable server-side refusal fallback
 

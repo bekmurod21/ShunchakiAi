@@ -17,7 +17,13 @@ public sealed record MessageRequest(
     bool AdaptiveThinking,
     bool ServerFallback)
 {
-    public byte[] ToUtf8Json()
+    /// <summary>
+    /// Prefix for provider-private metadata kept on content blocks in the canonical history
+    /// (e.g. Gemini thought signatures). Never sent to the Anthropic API.
+    /// </summary>
+    public const string PrivateFieldPrefix = "_";
+
+    public byte[] ToAnthropicJson()
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -64,11 +70,75 @@ public sealed record MessageRequest(
             Tools.WriteTo(writer);
 
             writer.WritePropertyName("messages");
-            Messages.WriteTo(writer);
+            WriteMessagesWithoutPrivateFields(writer);
 
             writer.WriteEndObject();
         }
 
         return buffer.ToArray();
+    }
+
+    private void WriteMessagesWithoutPrivateFields(Utf8JsonWriter writer)
+    {
+        writer.WriteStartArray();
+        foreach (var message in Messages)
+        {
+            if (message is not JsonObject obj || obj["content"] is not JsonArray content)
+            {
+                message?.WriteTo(writer);
+                continue;
+            }
+
+            writer.WriteStartObject();
+            foreach (var (name, value) in obj)
+            {
+                writer.WritePropertyName(name);
+                if (name != "content")
+                {
+                    WriteValue(writer, value);
+                    continue;
+                }
+
+                writer.WriteStartArray();
+                foreach (var block in content)
+                {
+                    if (block is not JsonObject blockObject)
+                    {
+                        WriteValue(writer, block);
+                        continue;
+                    }
+
+                    writer.WriteStartObject();
+                    foreach (var (field, fieldValue) in blockObject)
+                    {
+                        if (!field.StartsWith(PrivateFieldPrefix, StringComparison.Ordinal))
+                        {
+                            writer.WritePropertyName(field);
+                            WriteValue(writer, fieldValue);
+                        }
+                    }
+
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
+            }
+
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private static void WriteValue(Utf8JsonWriter writer, JsonNode? value)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+        }
+        else
+        {
+            value.WriteTo(writer);
+        }
     }
 }

@@ -1,3 +1,5 @@
+using ShunchakiAi.Api;
+
 namespace ShunchakiAi.Agent;
 
 public sealed record ModelStatus(string Model, string State);
@@ -13,6 +15,7 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
     private readonly Dictionary<string, DateTimeOffset> _cooldownUntil = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _excluded = new(StringComparer.Ordinal);
     private readonly HashSet<string> _skippedThisTurn = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _providerWide = new(StringComparer.Ordinal);
 
     public IReadOnlyList<string> Models => models;
 
@@ -47,7 +50,16 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
 
     public void ReportFailure(string model, Failure failure, DateTimeOffset now)
     {
-        if (failure.Scope == FailureScope.Conversation)
+        if (failure.Scope == FailureScope.Provider)
+        {
+            _providerWide.Add(failure.Reason);
+            var provider = ModelProviders.ProviderOf(model);
+            foreach (var other in models.Where(m => ModelProviders.ProviderOf(m) == provider))
+            {
+                _excluded[other] = failure.Reason;
+            }
+        }
+        else if (failure.Scope == FailureScope.Conversation)
         {
             _excluded[model] = failure.Reason;
         }
@@ -67,7 +79,12 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
     /// <summary>A new conversation may fit models that were excluded for the old one.</summary>
     public void ResetConversation()
     {
-        _excluded.Clear();
+        // Provider-wide problems (bad key, no credit) do not go away with a new conversation.
+        foreach (var model in _excluded.Where(e => !_providerWide.Contains(e.Value)).Select(e => e.Key).ToList())
+        {
+            _excluded.Remove(model);
+        }
+
         _skippedThisTurn.Clear();
     }
 

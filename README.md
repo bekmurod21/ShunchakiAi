@@ -18,7 +18,7 @@ Allow? [y/n] (y): y
 
 ## Features
 
-- **REPL and single-shot modes.** Run `ai` for a chat session, or `ai "refactor this file"` for one request.
+- **REPL and single-shot modes.** Run `shunchaki` for a chat session, or `shunchaki "refactor this file"` for one request.
 - **Tool calling.** `read_file`, `list_directory`, `write_file`, `edit_file` and `run_shell`.
 - **Safety.**
   - File access is confined to the workspace root, including symlinks that point outside it.
@@ -30,13 +30,14 @@ Allow? [y/n] (y): y
   - Animated spinners while it waits on the API.
   - Markdown rendering: headings, lists, quotes, inline code and bordered code blocks.
   - Dimmed thinking summaries.
+- **Claude and Gemini in one chain.** Anthropic and Google models can be mixed in the failover chain, and work moves between them with the same context.
 - **Model failover.** If a model hits its rate limit or token quota, is overloaded or unavailable, can't fit the conversation, or declines a request, the work moves to the next model in the chain and keeps going until the task is finished. See [Model failover and session history](#model-failover-and-session-history).
-- **Saved sessions and work log.** The full history and a readable work log are saved after every step, and `ai --resume` continues where you left off.
+- **Saved sessions and work log.** The full history and a readable work log are saved after every step, and `shunchaki --resume` continues where you left off.
 - **Instant startup.** It ships as a single native binary (about 10 MB, starts in under 10 ms) with no runtime to install.
 
 ## Requirements
 
-- An Anthropic API key in the `ANTHROPIC_API_KEY` environment variable.
+- An Anthropic API key in `ANTHROPIC_API_KEY`, a Google Gemini API key in `GEMINI_API_KEY` (`GOOGLE_API_KEY` also works), or both.
 - To build: the .NET 10 SDK. Native AOT also needs the platform linker: `clang` on Linux, the Xcode command-line tools on macOS, or "Desktop development with C++" on Windows.
 
 ## Build
@@ -47,25 +48,26 @@ dotnet run --project src/ShunchakiAi -- "explain this project"
 
 # Native AOT binary (pick your runtime identifier)
 dotnet publish src/ShunchakiAi -c Release -r linux-x64   -o publish   # or win-x64, osx-arm64, linux-arm64
-./publish/ai --help
+./publish/shunchaki --help
 ```
 
-Put `publish/ai` (`ai.exe` on Windows) somewhere on your `PATH`.
+Put `publish/shunchaki` (`shunchaki.exe` on Windows) somewhere on your `PATH`.
 
 ## Usage
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude models
+export GEMINI_API_KEY=...             # Gemini models (optional; at least one key is required)
 
-ai                                   # interactive session
-ai "why does the build fail?"        # single request; exit code 0 on success
-git diff | ai "review this change"   # piped stdin is attached to the prompt
-ai -C ~/code/app -e xhigh "add tests for the parser"
+shunchaki                                   # interactive session
+shunchaki "why does the build fail?"        # single request; exit code 0 on success
+git diff | shunchaki "review this change"   # piped stdin is attached to the prompt
+shunchaki -C ~/code/app -e xhigh "add tests for the parser"
 ```
 
 | Option | Description |
 | --- | --- |
-| `-m, --model <id[,id...]>` | Failover chain (default `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-4-5`, or `SHUNCHAKI_MODELS`). A single model is tried first, with the default chain behind it |
+| `-m, --model <id[,id...]>` | Failover chain; Claude and Gemini models can be mixed. The default is the Claude chain `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-4-5` followed by the Gemini chain, each only if its key is set (or set `SHUNCHAKI_MODELS`). A single model is tried first, with the default chain behind it |
 | `--no-failover` | Use only the first model |
 | `-r, --resume` | Continue the most recent session in this workspace |
 | `-s, --session <id>` | Continue a specific saved session |
@@ -89,8 +91,12 @@ pressing it at the prompt quits.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | (required) | API key |
+| `ANTHROPIC_API_KEY` | (one key required) | Anthropic key for Claude models |
+| `GEMINI_API_KEY` | (one key required) | Google key for Gemini models (`GOOGLE_API_KEY` also works) |
+| `SHUNCHAKI_GEMINI_MODELS` | `gemini-3.1-pro-preview,gemini-3.8-flash` | Gemini part of the default chain |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/` | Endpoint override |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/` | Endpoint override |
+| `SHUNCHAKI_MAX_WAIT` | `600` | Seconds to keep retrying when every model is unavailable |
 | `SHUNCHAKI_MAX_TOKENS` | `16000` | Max output tokens per response |
 | `SHUNCHAKI_MAX_CONTINUE` | `5` | Automatic "continue" requests when a reply hits the output limit |
 | `SHUNCHAKI_MAX_TOOL_ITERATIONS` | `100` | Tool round-trips allowed per turn |
@@ -109,15 +115,21 @@ The agent is built to finish the task even when a model can't continue.
 | 529 overloaded, 5xx, network error | Model cools down for 20 to 30 s |
 | Model not found or not enabled, context window too small | Model is excluded for this conversation |
 | Model declined the request (after Anthropic's server-side fallback) | Model is skipped for this turn |
-| Out of credit, invalid API key | Work stops with a clear message; every model shares the same account, so switching wouldn't help |
+| Out of credit, invalid API key | Every model of that provider is excluded, and the work continues on the other provider. If no models remain, the work stops with a clear message |
 
-Each request goes to the first ready model, so the agent returns to your preferred model once it recovers. If every model is cooling down, it waits for the soonest one. When a reply is cut off by the output limit, the agent sends "continue" automatically.
+Each request goes to the first ready model, so the agent returns to your preferred model once it recovers. If every model is cooling down, it waits for the soonest one, giving up after `SHUNCHAKI_MAX_WAIT`. When a reply is cut off by the output limit, the agent sends "continue" automatically.
 
 **The context stays the same when the model changes:**
 
 - Every model gets the same system prompt, tool list and append-only history, including the previous model's thinking blocks. A model that can't read them ignores them, and nothing is stripped or rewritten.
 - The new model also gets a `<handoff>` note on the pending message. It names the model it's taking over from and why, and contains a work-log summary: the current request, the progress notes, and the latest actions with their results.
 - The model calls the `record_progress` tool after significant steps ("done: ..., next: ..."). These notes are what the next model uses to continue the work.
+
+**Switching between Claude and Gemini.** The history is stored in one canonical format (Messages API), and every provider translates it on each request.
+
+- Gemini receives the same system prompt, tools and turns as `contents`. Tool calls and results become `functionCall` and `functionResponse` parts, and Claude's thinking blocks are left out.
+- Gemini 3 needs a thought signature on every tool call. Gemini's own signatures are stored on the canonical blocks in `_`-prefixed fields and returned to it unchanged. Tool calls made by Claude get Google's documented placeholder, `skip_thought_signature_validator`.
+- Gemini replies are converted back into canonical text and `tool_use` blocks. The `_` fields are stripped before anything is sent to Anthropic, so Claude sees a valid history whichever model produced a turn.
 
 **Everything is saved to `.shunchaki/sessions/<id>/` in the workspace after every step.**
 
@@ -126,7 +138,7 @@ Each request goes to the first ready model, so the agent returns to your preferr
 
 `.shunchaki/` contains its own `.gitignore`, so session data is never committed.
 
-After an interruption, crash or outage, run `ai --resume` or use `/resume` in the REPL. The stored system prompt is reused verbatim, so the resumed conversation has exactly the same context as before.
+After an interruption, crash or outage, run `shunchaki --resume` or use `/resume` in the REPL. The stored system prompt is reused verbatim, so the resumed conversation has exactly the same context as before.
 
 ## Architecture
 
@@ -137,7 +149,7 @@ src/ShunchakiAi/
 ├── TurnCancellation.cs     Ctrl+C cancels the current turn, not the process
 ├── StandardInput.cs        Piped-stdin reader that never hangs on an idle pipe
 ├── Configuration/          CLI parsing, environment configuration, model capabilities
-├── Api/                    Messages API over HttpClient: request writer, response parser, retries
+├── Api/                    IModelProvider, AnthropicClient, GeminiClient (history translation), HttpSender (retries)
 ├── Agent/                  Agent loop, conversation, ModelRouter (failover chain), FailoverPolicy
 ├── Sessions/               SessionStore (session.json + worklog.md), WorkLog
 ├── Tools/                  ITool, file/shell/record_progress tools, ToolRegistry

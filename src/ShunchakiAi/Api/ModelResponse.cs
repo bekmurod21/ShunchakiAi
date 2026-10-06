@@ -21,6 +21,9 @@ public readonly record struct TokenUsage(long InputTokens, long OutputTokens, lo
 /// </summary>
 public sealed record ModelResponse(string StopReason, JsonArray Content, string? RefusalDetail, TokenUsage Usage)
 {
+    /// <summary>Reasoning summaries to display that are not part of <see cref="Content"/> (Gemini thoughts).</summary>
+    public IReadOnlyList<string> Thoughts { get; init; } = [];
+
     public IEnumerable<ToolCall> ToolCalls =>
         Content.OfType<JsonObject>()
             .Where(block => BlockType(block) == "tool_use")
@@ -35,7 +38,7 @@ public sealed record ModelResponse(string StopReason, JsonArray Content, string?
     {
         if (JsonNode.Parse(json) is not JsonObject root)
         {
-            throw new AnthropicApiException(0, "invalid_response", "Response body was not a JSON object.");
+            throw new ModelApiException(ModelProviders.Anthropic, 0, "invalid_response", "Response body was not a JSON object.");
         }
 
         // Detach the content array so it can be re-parented into the conversation history.

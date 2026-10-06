@@ -26,7 +26,7 @@ try
 
     if (cli.ShowVersion)
     {
-        Console.WriteLine($"ai {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}");
+        Console.WriteLine($"shunchaki {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}");
         return 0;
     }
 
@@ -49,13 +49,29 @@ if (Console.IsInputRedirected)
     }
 }
 
-using var client = new AnthropicClient(options.BaseUrl, options.ApiKey);
+var providerList = new List<IModelProvider>();
+if (options.AnthropicApiKey is { } anthropicKey)
+{
+    providerList.Add(new AnthropicClient(options.AnthropicBaseUrl, anthropicKey));
+}
+
+if (options.GeminiApiKey is { } geminiKey)
+{
+    providerList.Add(new GeminiClient(options.GeminiBaseUrl, geminiKey));
+}
+
+using var providers = new ProviderRegistry(providerList);
+foreach (var skipped in options.SkippedModels)
+{
+    ui.ShowWarning($"Skipping {skipped}: no API key for {ModelProviders.ProviderOf(skipped)}.");
+}
+
 var files = new FileSystemService(options.WorkingDirectory);
 var store = new SessionStore(options.WorkingDirectory);
 var workLog = new WorkLog();
 AgentSession? session = null;
 var tools = ToolRegistry.CreateDefault(files, new ShellExecutor(), options.ShellTimeout, workLog, () => session?.ActiveModel);
-session = new AgentSession(client, tools, ui, options, new ModelRouter(options.Models), workLog, store);
+session = new AgentSession(providers, tools, ui, options, new ModelRouter(options.Models), workLog, store);
 using var cancellation = new TurnCancellation();
 
 if (options.Resume)

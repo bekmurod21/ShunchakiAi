@@ -63,7 +63,7 @@ public sealed record CliArguments
                 default:
                     if (arg.StartsWith('-') && arg.Length > 1 && promptParts.Count == 0)
                     {
-                        throw new ConfigurationException($"Unknown option '{arg}'. Run 'ai --help' for usage.");
+                        throw new ConfigurationException($"Unknown option '{arg}'. Run 'shunchaki --help' for usage.");
                     }
                     promptParts.Add(arg);
                     break;

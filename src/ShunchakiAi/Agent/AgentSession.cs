@@ -22,7 +22,9 @@ public sealed class AgentSession
         "Your previous response was cut off by the output token limit. Continue exactly where you stopped; " +
         "do not repeat what you already wrote.";
 
-    private readonly AnthropicClient _client;
+    private const int MaxRetries = 3;
+
+    private readonly ProviderRegistry _providers;
     private readonly ToolRegistry _tools;
     private readonly IAgentView _view;
     private readonly AgentOptions _options;
@@ -37,13 +39,14 @@ public sealed class AgentSession
     private string? _lastModel;
     private string? _switchReason;
     private JsonObject? _unansweredNote;
+    private string? _handoffFor;
     private bool _saveFailed;
 
     public AgentSession(
-        AnthropicClient client, ToolRegistry tools, IAgentView view, AgentOptions options,
+        ProviderRegistry providers, ToolRegistry tools, IAgentView view, AgentOptions options,
         ModelRouter router, WorkLog workLog, SessionStore store)
     {
-        _client = client;
+        _providers = providers;
         _tools = tools;
         _view = view;
         _options = options;
@@ -79,6 +82,7 @@ public sealed class AgentSession
         _created = DateTimeOffset.Now;
         _lastModel = null;
         _unansweredNote = null;
+        _handoffFor = null;
         SessionId = SessionStore.NewId();
     }
 
@@ -95,6 +99,7 @@ public sealed class AgentSession
         _created = snapshot.Created;
         _lastModel = snapshot.LastModel;
         _unansweredNote = null;
+        _handoffFor = null;
         SessionId = snapshot.Id;
 
         // A session saved mid-turn may end on an assistant tool call that never ran.
@@ -126,6 +131,7 @@ public sealed class AgentSession
                     // Every model declined: do not keep the refused exchange in the history.
                     _conversation.TruncateTo(checkpoint);
                     _unansweredNote = null;
+                    _handoffFor = null;
                     _workLog.Add(WorkLogKind.Problem, model, "Request declined by every available model.", isError: true);
                     _view.ShowWarning("Every available model declined this request. Try rephrasing it.");
                     return false;
@@ -137,7 +143,7 @@ public sealed class AgentSession
 
                 _conversation.AddAssistant(response.Content);
                 madeProgress = true;
-                Render(response.Content, model);
+                Render(response, model);
                 Save();
 
                 var calls = response.ToolCalls.ToList();
@@ -192,7 +198,7 @@ public sealed class AgentSession
             _view.ShowError(ex.Message);
             if (madeProgress)
             {
-                _view.ShowInfo($"Progress is saved. Resume later with: ai --session {SessionId}");
+                _view.ShowInfo($"Progress is saved. Resume later with: shunchaki --session {SessionId}");
             }
 
             return false;
@@ -214,9 +220,15 @@ public sealed class AgentSession
     private async Task<(ModelResponse? Response, string Model)> RequestWithFailoverAsync(bool firstStep, CancellationToken cancellationToken)
     {
         string? lastError = null;
+        DateTimeOffset? failingSince = null;
         while (true)
         {
             var now = DateTimeOffset.Now;
+            if (lastError is not null)
+            {
+                failingSince ??= now;
+            }
+
             var (model, wait) = _router.Select(now);
             if (model is null)
             {
@@ -230,6 +242,13 @@ public sealed class AgentSession
 
             if (wait > TimeSpan.Zero)
             {
+                // Give up once the models have been failing for longer than the allowed wait.
+                if (failingSince is { } since && now + wait - since > _options.MaxWait)
+                {
+                    throw new AllModelsFailedException(
+                        $"Every model stayed unavailable for over {_options.MaxWait.TotalMinutes:0.#} min. Last error: {lastError}");
+                }
+
                 _workLog.Add(WorkLogKind.Problem, null, $"All models are busy; waiting {wait.TotalSeconds:0}s for {model}.");
                 await _view.ShowProgressAsync(
                     $"All models are rate-limited or busy; retrying {model} in {wait.TotalSeconds:0}s...",
@@ -243,18 +262,18 @@ public sealed class AgentSession
 
             try
             {
-                var retries = _router.HasAlternative(model, now) ? 0 : AnthropicClient.DefaultMaxRetries;
+                var retries = _router.HasAlternative(model, now) ? 0 : MaxRetries;
                 var label = firstStep ? "Thinking" : "Working";
                 var response = await _view.ShowProgressAsync(
                     $"{label} ({model})...",
-                    () => _client.CreateMessageAsync(BuildRequest(model), retries, cancellationToken)).ConfigureAwait(false);
+                    () => _providers.For(model).CreateMessageAsync(BuildRequest(model), retries, cancellationToken)).ConfigureAwait(false);
 
                 if (response.StopReason == "refusal")
                 {
                     var detail = response.RefusalDetail is { } d ? $": {d}" : string.Empty;
                     _router.SkipForTurn(model);
                     lastError = null;
-                    _switchReason = $"{model} declined the request{detail}";
+                    AddSwitchReason($"{model} declined the request{detail}");
                     _view.ShowWarning($"{model} declined this request{detail}.");
                     continue;
                 }
@@ -263,16 +282,12 @@ public sealed class AgentSession
                 _lastModel = model;
                 _switchReason = null;
                 _unansweredNote = null;
+                _handoffFor = null;
                 return (response, model);
             }
-            catch (AnthropicApiException ex)
+            catch (ModelApiException ex)
             {
                 var failure = FailoverPolicy.Classify(ex);
-                if (failure.Scope == FailureScope.Fatal)
-                {
-                    throw new AllModelsFailedException(Describe(ex, failure));
-                }
-
                 lastError = $"{model}: {failure.Reason}";
                 OnModelFailed(model, failure);
             }
@@ -285,10 +300,14 @@ public sealed class AgentSession
         }
     }
 
+    /// <summary>Every failure since the last answer explains why the work moved on.</summary>
+    private void AddSwitchReason(string reason) =>
+        _switchReason = _switchReason is null ? reason : $"{_switchReason}; {reason}";
+
     private void OnModelFailed(string model, Failure failure)
     {
         _router.ReportFailure(model, failure, DateTimeOffset.Now);
-        _switchReason = $"{model} became unavailable ({failure.Reason})";
+        AddSwitchReason($"{model} became unavailable ({failure.Reason})");
         _workLog.Add(WorkLogKind.Problem, model, failure.Reason, isError: true);
         _view.ShowWarning($"{model}: {failure.Reason}.");
     }
@@ -301,7 +320,8 @@ public sealed class AgentSession
     /// </summary>
     private void PrepareHandoff(string model)
     {
-        if (_lastModel is null || _lastModel == model)
+        // _lastModel is the last model that actually answered; failed attempts never count.
+        if (_lastModel is null || _handoffFor == model)
         {
             return;
         }
@@ -310,6 +330,13 @@ public sealed class AgentSession
         {
             // A previous handoff attempt failed before any model answered: replace its note.
             _conversation.RemoveUnansweredNote(_unansweredNote);
+            _unansweredNote = null;
+            _handoffFor = null;
+        }
+
+        if (_lastModel == model)
+        {
+            return;
         }
 
         var reason = _switchReason ?? $"{model} is available again and is preferred in the model chain";
@@ -328,7 +355,7 @@ public sealed class AgentSession
 
         _workLog.Add(WorkLogKind.ModelSwitch, model, $"{_lastModel} → {model} ({reason})");
         _view.ShowModelSwitch(_lastModel, model, reason);
-        _lastModel = model;
+        _handoffFor = model;
     }
 
     private MessageRequest BuildRequest(string model) => new(
@@ -391,13 +418,19 @@ public sealed class AgentSession
         {
             _conversation.TruncateTo(checkpoint);
             _unansweredNote = null;
+            _handoffFor = null;
             _workLog.Reset(_workLog.Entries.Take(workLogCheckpoint).ToList());
         }
     }
 
-    private void Render(JsonArray content, string model)
+    private void Render(ModelResponse response, string model)
     {
-        foreach (var block in content.OfType<JsonObject>())
+        foreach (var thought in response.Thoughts)
+        {
+            _view.ShowThinking(thought);
+        }
+
+        foreach (var block in response.Content.OfType<JsonObject>())
         {
             switch (ModelResponse.BlockType(block))
             {
@@ -433,12 +466,6 @@ public sealed class AgentSession
         }
     }
 
-    private static string Describe(AnthropicApiException ex, Failure failure) => ex.StatusCode switch
-    {
-        401 => "Authentication failed: check that ANTHROPIC_API_KEY is valid.",
-        _ when failure.Reason != ex.Message => failure.Reason,
-        _ => ex.Message,
-    };
 }
 
 /// <summary>No model in the chain could serve the request.</summary>
