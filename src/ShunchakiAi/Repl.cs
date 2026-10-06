@@ -5,7 +5,7 @@ using ShunchakiAi.Ui;
 namespace ShunchakiAi;
 
 /// <summary>Read-Eval-Print Loop: read a request, run the agent turn, repeat.</summary>
-public sealed class Repl(AgentSession session, SessionStore store, ConsoleRenderer ui, TurnCancellation cancellation)
+public sealed class Repl(AgentSession session, SessionStore store, LoginFlow login, ConsoleRenderer ui, TurnCancellation cancellation)
 {
     public async Task<int> RunAsync()
     {
@@ -26,7 +26,7 @@ public sealed class Repl(AgentSession session, SessionStore store, ConsoleRender
 
             if (input.StartsWith('/'))
             {
-                if (!HandleCommand(input))
+                if (!await HandleCommandAsync(input))
                 {
                     return 0;
                 }
@@ -47,7 +47,7 @@ public sealed class Repl(AgentSession session, SessionStore store, ConsoleRender
     }
 
     /// <summary>Returns false when the REPL should exit.</summary>
-    private bool HandleCommand(string command)
+    private async Task<bool> HandleCommandAsync(string command)
     {
         var parts = command.Split(' ', 2, StringSplitOptions.TrimEntries);
         switch (parts[0].ToLowerInvariant())
@@ -100,6 +100,31 @@ public sealed class Repl(AgentSession session, SessionStore store, ConsoleRender
                 }
 
                 SessionLoader.TryResume(session, store, ui, id);
+                return true;
+            case "/login" or "/logout":
+                string? provider;
+                try
+                {
+                    provider = LoginFlow.ParseProvider(parts.Length > 1 ? parts[1] : null);
+                }
+                catch (ArgumentException ex)
+                {
+                    ui.ShowWarning(ex.Message);
+                    return true;
+                }
+
+                if (parts[0].Equals("/login", StringComparison.OrdinalIgnoreCase))
+                {
+                    await login.LoginAsync(provider);
+                }
+                else
+                {
+                    login.Logout(provider);
+                }
+
+                return true;
+            case "/keys":
+                login.ShowKeys();
                 return true;
             case "/help":
                 ui.ShowReplHelp();

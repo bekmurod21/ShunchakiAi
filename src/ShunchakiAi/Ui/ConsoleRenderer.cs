@@ -28,12 +28,15 @@ public sealed class ConsoleRenderer : IAgentView
 
     public bool IsInteractive => _console.Profile.Capabilities.Interactive && !Console.IsInputRedirected;
 
-    public void ShowBanner(AgentOptions options, string sessionPath)
+    public void ShowBanner(AgentOptions options, string sessionPath, Func<string, bool> hasKey)
     {
         _console.Write(new FigletText("Shunchaki AI").Color(Color.DeepSkyBlue1));
         var grid = new Grid().AddColumn(new GridColumn().NoWrap()).AddColumn();
         grid.AddRow("[grey]models[/]", Markup.Escape($"{string.Join(" → ", options.Models)} (effort: {options.Effort})"));
         grid.AddRow("[grey]workspace[/]", Markup.Escape(options.WorkingDirectory));
+        grid.AddRow("[grey]keys[/]", string.Join("   ", new[] { ModelProviders.Anthropic, ModelProviders.Gemini }.Select(p =>
+            hasKey(p) ? $"[green]✔[/] {Markup.Escape(ModelProviders.DisplayName(p))}"
+                      : $"[grey]✘ {Markup.Escape(ModelProviders.DisplayName(p))} (/login)[/]")));
         grid.AddRow("[grey]session[/]", Markup.Escape(sessionPath));
         grid.AddRow("[grey]approvals[/]", options.AutoApprove ? "[yellow]auto (--yes)[/]" : "ask before writes and commands");
         _console.Write(grid);
@@ -64,9 +67,10 @@ public sealed class ConsoleRenderer : IAgentView
               -h, --help                  Show this help
 
             [bold]Environment[/]
-              ANTHROPIC_API_KEY           Anthropic key (Claude models)
+              ANTHROPIC_API_KEY           Anthropic key (Claude models; ANTHROPIC_AUTH_TOKEN also works)
               GEMINI_API_KEY              Google key (Gemini models; GOOGLE_API_KEY also works)
-                                          At least one key is required.
+                                          No key set? You are asked for one at startup,
+                                          or use /login. Saved keys: ~/.config/shunchaki/
               SHUNCHAKI_GEMINI_MODELS     Gemini part of the default chain
                                           (default: gemini-3.1-pro-preview,gemini-3.8-flash)
               ANTHROPIC_BASE_URL          Optional endpoint overrides
@@ -78,7 +82,8 @@ public sealed class ConsoleRenderer : IAgentView
               SHUNCHAKI_FALLBACK=off      Disable server-side refusal fallback
 
             [bold]REPL commands[/]
-              /help  /clear  /usage  /models  /sessions  /resume [[id]]  /exit
+              /help  /clear  /usage  /models  /sessions  /resume [[id]]
+              /login [[claude|gemini]]  /logout [[claude|gemini]]  /keys  /exit
 
             Sessions (history + work log) are saved in .shunchaki/sessions/ inside the workspace.
             """);
@@ -90,6 +95,9 @@ public sealed class ConsoleRenderer : IAgentView
         [bold]/models[/]        failover chain and each model's state
         [bold]/sessions[/]      saved sessions in this workspace
         [bold]/resume [[id]][/]   continue a saved session (latest if no id)
+        [bold]/login [[claude|gemini]][/]   enter an API key (verified, optionally saved)
+        [bold]/logout [[claude|gemini]][/]  remove a key
+        [bold]/keys[/]          show which keys are configured
         [bold]/exit[/]   quit (also /quit, Ctrl+D)
         End a line with [bold]\[/] to continue typing on the next line.
         """);
@@ -189,6 +197,73 @@ public sealed class ConsoleRenderer : IAgentView
         _console.Write(new Rule($"[mediumpurple]🔁 {Markup.Escape(from)} → {Markup.Escape(to)}[/]").RuleStyle("mediumpurple").LeftJustified());
         _console.MarkupLine($"[grey]{Markup.Escape(reason)}. The full history and work log were handed over.[/]");
     }
+
+    /// <summary>Reads a secret without echoing it (one • per character). Empty on Esc.</summary>
+    public string ReadSecret(string label)
+    {
+        _console.Markup($"[bold]{Markup.Escape(label)}:[/] ");
+        if (Console.IsInputRedirected)
+        {
+            return Console.ReadLine() ?? string.Empty;
+        }
+
+        var secret = new StringBuilder();
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            switch (key.Key)
+            {
+                case ConsoleKey.Enter:
+                    Console.WriteLine();
+                    return secret.ToString();
+                case ConsoleKey.Escape:
+                    Console.WriteLine();
+                    return string.Empty;
+                case ConsoleKey.Backspace when secret.Length > 0:
+                    secret.Length--;
+                    Console.Write("\b \b");
+                    break;
+                default:
+                    if (!char.IsControl(key.KeyChar))
+                    {
+                        secret.Append(key.KeyChar);
+                        Console.Write('•');
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Numbered menu; returns the chosen value, or null when cancelled.</summary>
+    public string? Choose(string title, IReadOnlyList<(string Value, string Label)> options)
+    {
+        _console.MarkupLine($"[bold]{Markup.Escape(title)}[/]");
+        for (var i = 0; i < options.Count; i++)
+        {
+            _console.MarkupLine($"  [deepskyblue1]{i + 1}[/]) {Markup.Escape(options[i].Label)}");
+        }
+
+        while (true)
+        {
+            _console.Markup($"[grey]Choose 1-{options.Count} (Enter to cancel):[/] ");
+            var line = Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(line))
+            {
+                return null;
+            }
+
+            if (int.TryParse(line, out var index) && index >= 1 && index <= options.Count)
+            {
+                return options[index - 1].Value;
+            }
+        }
+    }
+
+    public bool Confirm(string question, bool defaultValue) =>
+        _console.Prompt(new ConfirmationPrompt(Markup.Escape(question)) { DefaultValue = defaultValue });
+
+    public void ShowSuccess(string message) => _console.MarkupLine($"[green]✔ {Markup.Escape(message)}[/]");
 
     public void ShowWarning(string message) => _console.MarkupLine($"[yellow]⚠ {Markup.Escape(message)}[/]");
 

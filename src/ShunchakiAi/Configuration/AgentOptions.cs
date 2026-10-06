@@ -8,8 +8,6 @@ namespace ShunchakiAi.Configuration;
 /// </summary>
 public sealed record AgentOptions
 {
-    public const string AnthropicKeyVariable = "ANTHROPIC_API_KEY";
-    public const string GeminiKeyVariable = "GEMINI_API_KEY";
     public const string DefaultModel = "claude-opus-5-5";
 
     /// <summary>Claude part of the default failover chain.</summary>
@@ -20,17 +18,15 @@ public sealed record AgentOptions
 
     private static readonly string[] EffortLevels = ["low", "medium", "high", "xhigh", "max"];
 
-    public string? AnthropicApiKey { get; init; }
     public required Uri AnthropicBaseUrl { get; init; }
-    public string? GeminiApiKey { get; init; }
     public required Uri GeminiBaseUrl { get; init; }
 
-    /// <summary>Failover chain, most preferred first. Only models whose provider has a key.</summary>
+    /// <summary>
+    /// Failover chain, most preferred first. Models whose provider has no API key yet are
+    /// skipped at runtime until a key is added (environment, saved file or /login).
+    /// </summary>
     public required IReadOnlyList<string> Models { get; init; }
     public string Model => Models[0];
-
-    /// <summary>Requested models dropped because their provider has no API key.</summary>
-    public IReadOnlyList<string> SkippedModels { get; init; } = [];
     public required string Effort { get; init; }
     public required int MaxTokens { get; init; }
     public required int MaxToolIterations { get; init; }
@@ -45,26 +41,7 @@ public sealed record AgentOptions
 
     public static AgentOptions Load(CliArguments cli)
     {
-        var anthropicKey = Env(AnthropicKeyVariable);
-        var geminiKey = Env(GeminiKeyVariable) ?? Env("GOOGLE_API_KEY");
-        if (anthropicKey is null && geminiKey is null)
-        {
-            throw new ConfigurationException(
-                $"No API key found. Set {AnthropicKeyVariable} (Claude) and/or {GeminiKeyVariable} (Gemini), " +
-                $"e.g.  export {AnthropicKeyVariable}=sk-ant-...");
-        }
-
-        var requested = ParseModels(cli.Model ?? Env("SHUNCHAKI_MODELS") ?? Env("SHUNCHAKI_MODEL"), anthropicKey, geminiKey);
-        bool HasKey(string model) =>
-            (ModelProviders.ProviderOf(model) == ModelProviders.Gemini ? geminiKey : anthropicKey) is not null;
-
-        var models = requested.Where(HasKey).ToArray();
-        if (models.Length == 0)
-        {
-            throw new ConfigurationException(
-                $"None of the requested models ({string.Join(", ", requested)}) has an API key configured.");
-        }
-
+        var models = ParseModels(cli.Model ?? Env("SHUNCHAKI_MODELS") ?? Env("SHUNCHAKI_MODEL"));
         if (cli.NoFailover)
         {
             models = [models[0]];
@@ -84,12 +61,9 @@ public sealed record AgentOptions
 
         return new AgentOptions
         {
-            AnthropicApiKey = anthropicKey,
             AnthropicBaseUrl = BaseUrl("ANTHROPIC_BASE_URL", "https://api.anthropic.com/"),
-            GeminiApiKey = geminiKey,
             GeminiBaseUrl = BaseUrl("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/"),
             Models = models,
-            SkippedModels = requested.Where(m => !HasKey(m)).ToArray(),
             Effort = effort,
             MaxTokens = IntEnv("SHUNCHAKI_MAX_TOKENS", 16_000),
             MaxToolIterations = IntEnv("SHUNCHAKI_MAX_TOOL_ITERATIONS", 100),
@@ -105,19 +79,15 @@ public sealed record AgentOptions
     }
 
     /// <summary>
-    /// Default: the Claude chain followed by the Gemini chain (each only if its key is set).
+    /// Default: the Claude chain followed by the Gemini chain.
     /// A single model gets the default chain appended as fallbacks; an explicit comma-separated
     /// list is used exactly as given.
     /// </summary>
-    private static string[] ParseModels(string? value, string? anthropicKey, string? geminiKey)
+    private static string[] ParseModels(string? value)
     {
         var geminiChain = Env("SHUNCHAKI_GEMINI_MODELS")?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? DefaultGeminiChain;
-        string[] defaults =
-        [
-            .. anthropicKey is null ? [] : DefaultClaudeChain,
-            .. geminiKey is null ? [] : geminiChain,
-        ];
+        string[] defaults = [.. DefaultClaudeChain, .. geminiChain];
 
         if (value is null)
         {

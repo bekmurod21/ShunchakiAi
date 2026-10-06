@@ -232,6 +232,11 @@ public sealed class AgentSession
             var (model, wait) = _router.Select(now);
             if (model is null)
             {
+                if (!_router.AnyConfigured)
+                {
+                    throw new AllModelsFailedException("No API key is configured. Use /login to enter a Claude or Gemini key.");
+                }
+
                 if (lastError is null)
                 {
                     return (null, ActiveModel ?? _options.Model);

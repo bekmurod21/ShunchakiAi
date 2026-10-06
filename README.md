@@ -37,7 +37,7 @@ Allow? [y/n] (y): y
 
 ## Requirements
 
-- An Anthropic API key in `ANTHROPIC_API_KEY`, a Google Gemini API key in `GEMINI_API_KEY` (`GOOGLE_API_KEY` also works), or both.
+- A Claude (Anthropic) key, a Gemini (Google) key, or both. You can enter them after starting `shunchaki`, or set them as environment variables. See [API keys](#api-keys).
 - To build: the .NET 10 SDK. Native AOT also needs the platform linker: `clang` on Linux, the Xcode command-line tools on macOS, or "Desktop development with C++" on Windows.
 
 ## Build
@@ -56,8 +56,9 @@ Put `publish/shunchaki` (`shunchaki.exe` on Windows) somewhere on your `PATH`.
 ## Usage
 
 ```bash
+# Optional: shunchaki asks for a key on first start if none is set
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude models
-export GEMINI_API_KEY=...             # Gemini models (optional; at least one key is required)
+export GEMINI_API_KEY=...             # Gemini models
 
 shunchaki                                   # interactive session
 shunchaki "why does the build fail?"        # single request; exit code 0 on success
@@ -84,6 +85,9 @@ The REPL accepts:
 - `/models`: the failover chain and each model's state
 - `/sessions`: saved sessions in this workspace
 - `/resume [id]`: continue a saved session
+- `/login [claude|gemini]`: enter an API key, which is checked before use and can be saved
+- `/logout [claude|gemini]`: remove a key
+- `/keys`: show which keys are set, masked, and where each comes from
 - `/exit`
 
 End a line with `\` to keep typing on the next line. **Ctrl+C** interrupts the running turn, and
@@ -91,8 +95,9 @@ pressing it at the prompt quits.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | (one key required) | Anthropic key for Claude models |
-| `GEMINI_API_KEY` | (one key required) | Google key for Gemini models (`GOOGLE_API_KEY` also works) |
+| `ANTHROPIC_API_KEY` | (or `/login`) | Anthropic key for Claude models (`ANTHROPIC_AUTH_TOKEN` also works) |
+| `GEMINI_API_KEY` | (or `/login`) | Google key for Gemini models (`GOOGLE_API_KEY` also works) |
+| `XDG_CONFIG_HOME` | `~/.config` | Where the saved keys file lives (`%APPDATA%` on Windows) |
 | `SHUNCHAKI_GEMINI_MODELS` | `gemini-3.1-pro-preview,gemini-3.8-flash` | Gemini part of the default chain |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/` | Endpoint override |
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/` | Endpoint override |
@@ -102,6 +107,24 @@ pressing it at the prompt quits.
 | `SHUNCHAKI_MAX_TOOL_ITERATIONS` | `100` | Tool round-trips allowed per turn |
 | `SHUNCHAKI_SHELL_TIMEOUT` | `120` | Default shell timeout in seconds |
 | `SHUNCHAKI_FALLBACK` | on | Set to `off` to disable server-side refusal fallback |
+
+## API keys
+
+You can enter keys after starting the program; environment variables are optional.
+
+- **First start without a key.** `shunchaki` asks which provider you want and reads the key without showing it.
+- **Verification.** Each key is checked with a free call that lists models and spends no tokens. A rejected key is asked for again.
+- **Saving.** You choose whether to save the key. Saved keys go to `~/.config/shunchaki/credentials.json` (`%APPDATA%\shunchaki\` on Windows) with owner-only permissions (`0600`), so later sessions start without asking.
+- **In the REPL.**
+  - `/login gemini` adds a second provider at any time, and its models join the failover chain immediately.
+  - `/login claude` replaces a key.
+  - `/logout` removes keys.
+  - `/keys` shows what is set.
+- **Priority.** Environment variables take priority over saved keys.
+- **Anthropic OAuth tokens.** Besides API keys (`sk-ant-api…`), Anthropic OAuth access tokens are accepted, for example from `ant auth print-credentials --access-token`. They're sent as `Authorization: Bearer` with the OAuth beta header.
+- **Scripts and CI.** A non-interactive run with no key exits with a clear message.
+
+Saved keys are stored in plain text, protected only by file permissions. Use environment variables or a secret manager if that isn't acceptable on a shared machine.
 
 ## Model failover and session history
 

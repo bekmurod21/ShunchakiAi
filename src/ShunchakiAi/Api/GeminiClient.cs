@@ -44,6 +44,9 @@ public sealed class GeminiClient : IModelProvider
         return ParseResponse(body);
     }
 
+    public Task<KeyCheck> CheckKeyAsync(CancellationToken cancellationToken) =>
+        HttpSender.CheckAsync(_http, "v1beta/models?pageSize=1", configure: null, cancellationToken);
+
     public void Dispose() => _http.Dispose();
 
     // ---------------------------------------------------------------- request

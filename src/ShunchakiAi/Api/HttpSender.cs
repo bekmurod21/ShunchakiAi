@@ -86,6 +86,37 @@ internal static class HttpSender
         }
     }
 
+    /// <summary>
+    /// Single GET used to verify credentials. Maps the outcome to a <see cref="KeyCheck"/>
+    /// without retries: 2xx is valid, 400/401/403 mean the key was rejected.
+    /// </summary>
+    public static async Task<KeyCheck> CheckAsync(HttpClient http, string path, Action<HttpRequestMessage>? configure, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            configure?.Invoke(request);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            var status = (int)response.StatusCode;
+            return status switch
+            {
+                >= 200 and < 300 => new KeyCheck(KeyCheckResult.Valid, "key accepted"),
+                400 or 401 or 403 => new KeyCheck(KeyCheckResult.Invalid, $"key rejected (HTTP {status})"),
+                _ => new KeyCheck(KeyCheckResult.Unknown, $"could not verify the key (HTTP {status})"),
+            };
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new KeyCheck(KeyCheckResult.Unknown, "could not verify the key (timed out)");
+        }
+        catch (HttpRequestException ex)
+        {
+            return new KeyCheck(KeyCheckResult.Unknown, $"could not verify the key ({ex.Message})");
+        }
+    }
+
     private static bool IsRetryable(HttpStatusCode status) =>
         status is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout or HttpStatusCode.Conflict
         || (int)status >= 500;

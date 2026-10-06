@@ -38,7 +38,7 @@ catch (ConfigurationException ex)
     return 2;
 }
 
-// Piped input (e.g. `git diff | ai "review this"`) is attached to the prompt.
+// Piped input (e.g. `git diff | shunchaki "review this"`) is attached to the prompt.
 var prompt = cli.Prompt;
 if (Console.IsInputRedirected)
 {
@@ -49,29 +49,36 @@ if (Console.IsInputRedirected)
     }
 }
 
-var providerList = new List<IModelProvider>();
-if (options.AnthropicApiKey is { } anthropicKey)
-{
-    providerList.Add(new AnthropicClient(options.AnthropicBaseUrl, anthropicKey));
-}
+// API keys: environment variables first, then keys saved earlier with /login. If none are
+// found and the terminal is interactive, ask for one now instead of failing.
+var credentials = new CredentialStore();
+using var providers = new ProviderRegistry();
+AgentSession? session = null;
+var login = new LoginFlow(credentials, providers, () => session?.Router, options, ui);
+login.ApplyStoredCredentials();
 
-if (options.GeminiApiKey is { } geminiKey)
+if (providers.IsEmpty)
 {
-    providerList.Add(new GeminiClient(options.GeminiBaseUrl, geminiKey));
-}
+    if (!ui.IsInteractive)
+    {
+        ui.ShowError("No API key found. Set ANTHROPIC_API_KEY (Claude) or GEMINI_API_KEY (Gemini), " +
+                     "or run shunchaki interactively once to enter and save a key.");
+        return 2;
+    }
 
-using var providers = new ProviderRegistry(providerList);
-foreach (var skipped in options.SkippedModels)
-{
-    ui.ShowWarning($"Skipping {skipped}: no API key for {ModelProviders.ProviderOf(skipped)}.");
+    ui.ShowInfo("Welcome to Shunchaki AI! No API key is configured yet - let's add one.");
+    if (!await login.LoginAsync(null))
+    {
+        ui.ShowError("Shunchaki needs a Claude or Gemini key to work. Run it again when you have one.");
+        return 2;
+    }
 }
 
 var files = new FileSystemService(options.WorkingDirectory);
 var store = new SessionStore(options.WorkingDirectory);
 var workLog = new WorkLog();
-AgentSession? session = null;
 var tools = ToolRegistry.CreateDefault(files, new ShellExecutor(), options.ShellTimeout, workLog, () => session?.ActiveModel);
-session = new AgentSession(providers, tools, ui, options, new ModelRouter(options.Models), workLog, store);
+session = new AgentSession(providers, tools, ui, options, new ModelRouter(options.Models, providers.IsAvailable), workLog, store);
 using var cancellation = new TurnCancellation();
 
 if (options.Resume)
@@ -104,5 +111,5 @@ if (Console.IsInputRedirected)
     return 2;
 }
 
-ui.ShowBanner(options, session.SessionPath);
-return await new Repl(session, store, ui, cancellation).RunAsync();
+ui.ShowBanner(options, session.SessionPath, providers.Has);
+return await new Repl(session, store, login, ui, cancellation).RunAsync();

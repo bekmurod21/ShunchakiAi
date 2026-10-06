@@ -10,7 +10,7 @@ public sealed record ModelStatus(string Model, string State);
 /// so the work moves down the chain when a model runs out and returns to the preferred model
 /// once it recovers.
 /// </summary>
-public sealed class ModelRouter(IReadOnlyList<string> models)
+public sealed class ModelRouter(IReadOnlyList<string> models, Func<string, bool> hasCredentials)
 {
     private readonly Dictionary<string, DateTimeOffset> _cooldownUntil = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _excluded = new(StringComparer.Ordinal);
@@ -25,7 +25,7 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
     /// </summary>
     public (string? Model, TimeSpan Wait) Select(DateTimeOffset now)
     {
-        var usable = models.Where(m => !_excluded.ContainsKey(m) && !_skippedThisTurn.Contains(m)).ToList();
+        var usable = models.Where(m => hasCredentials(m) && !_excluded.ContainsKey(m) && !_skippedThisTurn.Contains(m)).ToList();
         if (usable.Count == 0)
         {
             return (null, TimeSpan.Zero);
@@ -45,7 +45,7 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
 
     /// <summary>True if another model could take over right now if <paramref name="model"/> fails.</summary>
     public bool HasAlternative(string model, DateTimeOffset now) =>
-        models.Any(m => m != model && !_excluded.ContainsKey(m) && !_skippedThisTurn.Contains(m)
+        models.Any(m => m != model && hasCredentials(m) && !_excluded.ContainsKey(m) && !_skippedThisTurn.Contains(m)
                         && (!_cooldownUntil.TryGetValue(m, out var until) || until <= now));
 
     public void ReportFailure(string model, Failure failure, DateTimeOffset now)
@@ -88,8 +88,22 @@ public sealed class ModelRouter(IReadOnlyList<string> models)
         _skippedThisTurn.Clear();
     }
 
+    /// <summary>True if at least one model in the chain has an API key.</summary>
+    public bool AnyConfigured => models.Any(hasCredentials);
+
+    /// <summary>A new key for a provider lifts exclusions caused by its previous key.</summary>
+    public void ProviderKeyChanged(string provider)
+    {
+        foreach (var model in models.Where(m => ModelProviders.ProviderOf(m) == provider))
+        {
+            _excluded.Remove(model);
+            _cooldownUntil.Remove(model);
+        }
+    }
+
     public IEnumerable<ModelStatus> Describe(DateTimeOffset now) => models.Select(m => new ModelStatus(m,
-        _excluded.TryGetValue(m, out var why) ? $"excluded ({why})"
+        !hasCredentials(m) ? $"no API key for {ModelProviders.ProviderOf(m)} (use /login)"
+        : _excluded.TryGetValue(m, out var why) ? $"excluded ({why})"
         : _skippedThisTurn.Contains(m) ? "skipped this turn"
         : _cooldownUntil.TryGetValue(m, out var until) && until > now ? $"cooling down {(until - now).TotalSeconds:0}s"
         : "ready"));
