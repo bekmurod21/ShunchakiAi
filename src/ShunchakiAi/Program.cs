@@ -5,6 +5,7 @@ using ShunchakiAi.Agent;
 using ShunchakiAi.Api;
 using ShunchakiAi.Configuration;
 using ShunchakiAi.Execution;
+using ShunchakiAi.Sessions;
 using ShunchakiAi.Tools;
 using ShunchakiAi.Ui;
 
@@ -48,11 +49,29 @@ if (Console.IsInputRedirected)
     }
 }
 
-using var client = new AnthropicClient(options.BaseUrl, options.ApiKey, options.UseServerFallback);
+using var client = new AnthropicClient(options.BaseUrl, options.ApiKey);
 var files = new FileSystemService(options.WorkingDirectory);
-var tools = ToolRegistry.CreateDefault(files, new ShellExecutor(), options.ShellTimeout);
-var session = new AgentSession(client, tools, ui, options);
+var store = new SessionStore(options.WorkingDirectory);
+var workLog = new WorkLog();
+AgentSession? session = null;
+var tools = ToolRegistry.CreateDefault(files, new ShellExecutor(), options.ShellTimeout, workLog, () => session?.ActiveModel);
+session = new AgentSession(client, tools, ui, options, new ModelRouter(options.Models), workLog, store);
 using var cancellation = new TurnCancellation();
+
+if (options.Resume)
+{
+    var id = options.SessionId ?? store.LatestId();
+    if (id is null)
+    {
+        ui.ShowError($"No saved session found in {store.Directory}.");
+        return 2;
+    }
+
+    if (!SessionLoader.TryResume(session, store, ui, id))
+    {
+        return 2;
+    }
+}
 
 // Single-shot mode: run one request and exit with a status code.
 if (prompt is not null)
@@ -69,5 +88,5 @@ if (Console.IsInputRedirected)
     return 2;
 }
 
-ui.ShowBanner(options);
-return await new Repl(session, ui, cancellation).RunAsync();
+ui.ShowBanner(options, session.SessionPath);
+return await new Repl(session, store, ui, cancellation).RunAsync();

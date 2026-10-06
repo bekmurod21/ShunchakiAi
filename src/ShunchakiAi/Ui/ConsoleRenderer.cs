@@ -28,12 +28,13 @@ public sealed class ConsoleRenderer : IAgentView
 
     public bool IsInteractive => _console.Profile.Capabilities.Interactive && !Console.IsInputRedirected;
 
-    public void ShowBanner(AgentOptions options)
+    public void ShowBanner(AgentOptions options, string sessionPath)
     {
         _console.Write(new FigletText("Shunchaki AI").Color(Color.DeepSkyBlue1));
         var grid = new Grid().AddColumn(new GridColumn().NoWrap()).AddColumn();
-        grid.AddRow("[grey]model[/]", Markup.Escape($"{options.Model} (effort: {options.Effort})"));
+        grid.AddRow("[grey]models[/]", Markup.Escape($"{string.Join(" → ", options.Models)} (effort: {options.Effort})"));
         grid.AddRow("[grey]workspace[/]", Markup.Escape(options.WorkingDirectory));
+        grid.AddRow("[grey]session[/]", Markup.Escape(sessionPath));
         grid.AddRow("[grey]approvals[/]", options.AutoApprove ? "[yellow]auto (--yes)[/]" : "ask before writes and commands");
         _console.Write(grid);
         _console.MarkupLine("[grey]Type a request, or /help for commands. Ctrl+C interrupts a running turn.[/]");
@@ -51,7 +52,11 @@ public sealed class ConsoleRenderer : IAgentView
               cat log.txt | ai "explain"   Piped stdin is appended to the prompt
 
             [bold]Options[/]
-              -m, --model <id>            Model (default: claude-opus-5-5, env SHUNCHAKI_MODEL)
+              -m, --model <id[,id...]>    Model failover chain (default: claude-opus-5-5,
+                                          claude-sonnet-5-5,claude-haiku-4-5; env SHUNCHAKI_MODELS)
+                  --no-failover           Use only the first model
+              -r, --resume                Continue the most recent session in this workspace
+              -s, --session <id>          Continue a specific saved session
               -e, --effort <level>        low | medium | high | xhigh | max (default: high)
               -C, --cwd <dir>             Workspace root (default: current directory)
               -y, --yes                   Auto-approve file writes and shell commands
@@ -62,17 +67,23 @@ public sealed class ConsoleRenderer : IAgentView
               ANTHROPIC_API_KEY           Required. Your Anthropic API key
               ANTHROPIC_BASE_URL          Optional API endpoint override
               SHUNCHAKI_MAX_TOKENS        Max output tokens per response (default 16000)
+              SHUNCHAKI_MAX_CONTINUE      Automatic continuations after the output limit (default 5)
               SHUNCHAKI_SHELL_TIMEOUT     Default shell command timeout in seconds (default 120)
               SHUNCHAKI_FALLBACK=off      Disable server-side refusal fallback
 
             [bold]REPL commands[/]
-              /help  /clear  /usage  /exit
+              /help  /clear  /usage  /models  /sessions  /resume [[id]]  /exit
+
+            Sessions (history + work log) are saved in .shunchaki/sessions/ inside the workspace.
             """);
     }
 
     public void ShowReplHelp() => _console.MarkupLine("""
-        [bold]/clear[/]  start a new conversation
-        [bold]/usage[/]  show token usage for this session
+        [bold]/clear[/]         start a new conversation (new session)
+        [bold]/usage[/]         token usage, per model
+        [bold]/models[/]        failover chain and each model's state
+        [bold]/sessions[/]      saved sessions in this workspace
+        [bold]/resume [[id]][/]   continue a saved session (latest if no id)
         [bold]/exit[/]   quit (also /quit, Ctrl+D)
         End a line with [bold]\[/] to continue typing on the next line.
         """);
@@ -165,6 +176,12 @@ public sealed class ConsoleRenderer : IAgentView
 
         var approved = _console.Prompt(new ConfirmationPrompt("[yellow]Allow?[/]") { DefaultValue = true });
         return Task.FromResult(approved);
+    }
+
+    public void ShowModelSwitch(string from, string to, string reason)
+    {
+        _console.Write(new Rule($"[mediumpurple]🔁 {Markup.Escape(from)} → {Markup.Escape(to)}[/]").RuleStyle("mediumpurple").LeftJustified());
+        _console.MarkupLine($"[grey]{Markup.Escape(reason)}. The full history and work log were handed over.[/]");
     }
 
     public void ShowWarning(string message) => _console.MarkupLine($"[yellow]⚠ {Markup.Escape(message)}[/]");

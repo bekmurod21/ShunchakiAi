@@ -9,7 +9,10 @@ public sealed class AnthropicApiException(int statusCode, string errorType, stri
     public int StatusCode { get; } = statusCode;
     public string ErrorType { get; } = errorType;
 
-    public static AnthropicApiException FromResponse(int statusCode, string body)
+    /// <summary>Server-suggested wait before retrying, when the response carried one.</summary>
+    public TimeSpan? RetryAfter { get; init; }
+
+    public static AnthropicApiException FromResponse(int statusCode, string body, TimeSpan? retryAfter = null)
     {
         try
         {
@@ -18,7 +21,7 @@ public sealed class AnthropicApiException(int statusCode, string errorType, stri
             {
                 var type = error.TryGetProperty("type", out var t) ? t.GetString() : null;
                 var message = error.TryGetProperty("message", out var m) ? m.GetString() : null;
-                return new AnthropicApiException(statusCode, type ?? "unknown_error", message ?? body);
+                return new AnthropicApiException(statusCode, type ?? "unknown_error", message ?? body) { RetryAfter = retryAfter };
             }
         }
         catch (JsonException)
@@ -27,6 +30,6 @@ public sealed class AnthropicApiException(int statusCode, string errorType, stri
         }
 
         var snippet = body.Length > 500 ? body[..500] + "..." : body;
-        return new AnthropicApiException(statusCode, "http_error", snippet);
+        return new AnthropicApiException(statusCode, "http_error", snippet) { RetryAfter = retryAfter };
     }
 }

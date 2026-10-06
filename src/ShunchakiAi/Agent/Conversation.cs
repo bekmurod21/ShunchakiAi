@@ -10,7 +10,9 @@ namespace ShunchakiAi.Agent;
 /// </summary>
 public sealed class Conversation
 {
-    private readonly JsonArray _messages = [];
+    private readonly JsonArray _messages;
+
+    public Conversation(JsonArray? messages = null) => _messages = messages ?? [];
 
     public JsonArray Messages => _messages;
 
@@ -78,6 +80,40 @@ public sealed class Conversation
         if (pending.Count > 0)
         {
             AddToolResults(pending);
+        }
+    }
+
+    /// <summary>
+    /// Appends a text block to the trailing user message (the one about to be sent). Used for
+    /// model-handoff notes: earlier messages are never edited, so the history stays append-only.
+    /// </summary>
+    public JsonObject AppendNoteToLastUserMessage(string text)
+    {
+        var block = new JsonObject { ["type"] = "text", ["text"] = text };
+        if (_messages.Count > 0 && _messages[^1] is JsonObject last && Role(last) == "user"
+            && last["content"] is JsonArray content)
+        {
+            content.Add((JsonNode)block);
+        }
+        else
+        {
+            _messages.Add((JsonNode)new JsonObject { ["role"] = "user", ["content"] = new JsonArray(block) });
+        }
+
+        return block;
+    }
+
+    /// <summary>Removes a note that no model has answered yet (superseded by a newer note).</summary>
+    public void RemoveUnansweredNote(JsonObject note)
+    {
+        if (_messages.Count > 0 && _messages[^1] is JsonObject last && Role(last) == "user"
+            && last["content"] is JsonArray content && content.Contains(note))
+        {
+            content.Remove(note);
+            if (content.Count == 0)
+            {
+                _messages.RemoveAt(_messages.Count - 1);
+            }
         }
     }
 

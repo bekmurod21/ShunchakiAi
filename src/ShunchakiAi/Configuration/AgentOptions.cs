@@ -9,14 +9,25 @@ public sealed record AgentOptions
     public const string ApiKeyVariable = "ANTHROPIC_API_KEY";
     public const string DefaultModel = "claude-opus-5-5";
 
+    /// <summary>
+    /// Default failover chain: when a model hits its rate limit / token quota, is overloaded or
+    /// cannot fit the conversation, the work continues on the next one.
+    /// </summary>
+    public static readonly string[] DefaultModelChain = [DefaultModel, "claude-sonnet-5-5", "claude-haiku-4-5"];
+
     private static readonly string[] EffortLevels = ["low", "medium", "high", "xhigh", "max"];
 
     public required string ApiKey { get; init; }
     public required Uri BaseUrl { get; init; }
-    public required string Model { get; init; }
+    /// <summary>Failover chain, most preferred first.</summary>
+    public required IReadOnlyList<string> Models { get; init; }
+    public string Model => Models[0];
     public required string Effort { get; init; }
     public required int MaxTokens { get; init; }
     public required int MaxToolIterations { get; init; }
+    public required int MaxAutoContinue { get; init; }
+    public required bool Resume { get; init; }
+    public string? SessionId { get; init; }
     public required TimeSpan ShellTimeout { get; init; }
     public required string WorkingDirectory { get; init; }
     public required bool AutoApprove { get; init; }
@@ -31,7 +42,11 @@ public sealed record AgentOptions
                 $"{ApiKeyVariable} is not set. Export it first, e.g.  export {ApiKeyVariable}=sk-ant-...");
         }
 
-        var model = cli.Model ?? Env("SHUNCHAKI_MODEL") ?? DefaultModel;
+        var models = ParseModels(cli.Model ?? Env("SHUNCHAKI_MODELS") ?? Env("SHUNCHAKI_MODEL"));
+        if (cli.NoFailover)
+        {
+            models = [models[0]];
+        }
         var effort = (cli.Effort ?? Env("SHUNCHAKI_EFFORT") ?? "high").ToLowerInvariant();
         if (!EffortLevels.Contains(effort))
         {
@@ -59,16 +74,43 @@ public sealed record AgentOptions
         {
             ApiKey = apiKey.Trim(),
             BaseUrl = baseUri,
-            Model = model,
+            Models = models,
             Effort = effort,
             MaxTokens = IntEnv("SHUNCHAKI_MAX_TOKENS", 16_000),
-            MaxToolIterations = IntEnv("SHUNCHAKI_MAX_TOOL_ITERATIONS", 50),
+            MaxToolIterations = IntEnv("SHUNCHAKI_MAX_TOOL_ITERATIONS", 100),
+            MaxAutoContinue = IntEnv("SHUNCHAKI_MAX_CONTINUE", 5),
+            Resume = cli.Resume,
+            SessionId = cli.SessionId,
             ShellTimeout = TimeSpan.FromSeconds(IntEnv("SHUNCHAKI_SHELL_TIMEOUT", 120)),
             WorkingDirectory = workingDirectory,
             AutoApprove = cli.AutoApprove,
-            UseServerFallback = Env("SHUNCHAKI_FALLBACK") is not ("0" or "off" or "false")
-                && ModelCapabilities.SupportsServerFallback(model),
+            UseServerFallback = Env("SHUNCHAKI_FALLBACK") is not ("0" or "off" or "false"),
         };
+    }
+
+    /// <summary>
+    /// A single model gets the rest of the default chain appended as fallbacks; an explicit
+    /// comma-separated list is used exactly as given.
+    /// </summary>
+    private static string[] ParseModels(string? value)
+    {
+        if (value is null)
+        {
+            return DefaultModelChain;
+        }
+
+        var models = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (models.Length == 0)
+        {
+            throw new ConfigurationException("No model given.");
+        }
+
+        return models.Length > 1
+            ? models
+            : [models[0], .. DefaultModelChain.Where(m => m != models[0])];
     }
 
     private static string? Env(string name)

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using ShunchakiAi.Api;
 using ShunchakiAi.Execution;
+using ShunchakiAi.Sessions;
 
 namespace ShunchakiAi.Tools;
 
@@ -24,8 +25,10 @@ public sealed class ToolRegistry
         _tools = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
     }
 
-    public static ToolRegistry CreateDefault(FileSystemService files, ShellExecutor shell, TimeSpan shellTimeout) => new(
+    public static ToolRegistry CreateDefault(
+        FileSystemService files, ShellExecutor shell, TimeSpan shellTimeout, WorkLog workLog, Func<string?> currentModel) => new(
     [
+        new RecordProgressTool(workLog, currentModel),
         new ReadFileTool(files),
         new ListDirectoryTool(files),
         new WriteFileTool(files),

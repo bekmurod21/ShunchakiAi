@@ -18,6 +18,10 @@ public interface IAgentView : IToolApprover
 
     void ShowWarning(string message);
 
+    void ShowInfo(string message);
+
+    void ShowModelSwitch(string from, string to, string reason);
+
     void ShowError(string message);
 
     void ShowUsage(TokenUsage turn, TokenUsage total);

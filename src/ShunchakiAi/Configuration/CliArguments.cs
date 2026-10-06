@@ -12,12 +12,16 @@ public sealed record CliArguments
     public string? Effort { get; init; }
     public string? WorkingDirectory { get; init; }
     public bool AutoApprove { get; init; }
+    public bool Resume { get; init; }
+    public string? SessionId { get; init; }
+    public bool NoFailover { get; init; }
     public bool ShowHelp { get; init; }
     public bool ShowVersion { get; init; }
 
     public static CliArguments Parse(IReadOnlyList<string> args)
     {
         var result = new CliArguments();
+        // -m accepts a comma-separated failover chain: -m claude-opus-5-5,claude-sonnet-5-5
         var promptParts = new List<string>();
 
         for (var i = 0; i < args.Count; i++)
@@ -36,6 +40,15 @@ public sealed record CliArguments
                     break;
                 case "-m" or "--model":
                     result = result with { Model = RequireValue(args, ref i, arg) };
+                    break;
+                case "-r" or "--resume":
+                    result = result with { Resume = true };
+                    break;
+                case "-s" or "--session":
+                    result = result with { SessionId = RequireValue(args, ref i, arg), Resume = true };
+                    break;
+                case "--no-failover":
+                    result = result with { NoFailover = true };
                     break;
                 case "-e" or "--effort":
                     result = result with { Effort = RequireValue(args, ref i, arg) };
